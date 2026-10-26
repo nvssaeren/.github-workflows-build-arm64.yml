@@ -1,0 +1,126 @@
+name: Caesium Windows ARM64
+
+on:
+  workflow_dispatch:
+    inputs:
+      caesium_ref:
+        description: Caesium tag or branch to build
+        default: v2.8.5
+  push:
+    paths:
+      - .github/workflows/build-arm64.yml
+
+env:
+  CAESIUM_REF: ${{ github.event.inputs.caesium_ref || 'v2.8.5' }}
+  QT_VERSION: 6.8.2
+  WINSPARKLE_VERSION: 0.9.2
+
+jobs:
+  build:
+    runs-on: windows-11-arm
+    steps:
+      - name: Get Caesium source
+        uses: actions/checkout@v4
+        with:
+          repository: Lymphatus/caesium-image-compressor
+          ref: ${{ env.CAESIUM_REF }}
+          path: caesium
+
+      - name: Set up Python (ARM64)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: arm64
+
+      - name: Install Qt for ARM64 Windows
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade "aqtinstall>=3.2"
+          python -m aqt install-qt windows_arm64 desktop $env:QT_VERSION win64_msvc2022_arm64 -m qtimageformats --outputdir C:\Qt
+          $qt = "C:\Qt\$env:QT_VERSION\msvc2022_arm64"
+          if (-not (Test-Path "$qt\bin\windeployqt.exe")) { Get-ChildItem C:\Qt -Depth 2; throw "Qt not where expected" }
+          "QT_DIR=$qt" >> $env:GITHUB_ENV
+
+      - name: Install native ARM64 Rust
+        shell: pwsh
+        run: |
+          if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
+            Invoke-WebRequest https://static.rust-lang.org/rustup/dist/aarch64-pc-windows-msvc/rustup-init.exe -OutFile rustup-init.exe
+            .\rustup-init.exe -y --profile minimal --default-host aarch64-pc-windows-msvc --default-toolchain stable
+            "$env:USERPROFILE\.cargo\bin" >> $env:GITHUB_PATH
+            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+          }
+          rustup toolchain install stable-aarch64-pc-windows-msvc --profile minimal
+          rustup default stable-aarch64-pc-windows-msvc
+          rustc -vV
+
+      - name: Use clang for C code (enables JPEG NEON SIMD)
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          $candidates = @(
+            (Get-Command clang -ErrorAction SilentlyContinue).Source,
+            "$vs\VC\Tools\Llvm\ARM64\bin\clang.exe",
+            "$env:ProgramFiles\LLVM\bin\clang.exe"
+          ) | Where-Object { $_ -and (Test-Path $_) }
+          if ($candidates) {
+            $clang = $candidates[0]
+            & $clang --version
+            "CC_aarch64_pc_windows_msvc=$clang" >> $env:GITHUB_ENV
+            "CFLAGS_aarch64_pc_windows_msvc=-fms-runtime-lib=dll" >> $env:GITHUB_ENV
+          } else {
+            echo "::warning::clang not found; building with MSVC only, so JPEG SIMD will be off"
+          }
+
+      - name: Patch build files for ARM64 MSVC
+        shell: python
+        working-directory: caesium
+        run: |
+          import os, re, sys
+          ws = os.environ["WINSPARKLE_VERSION"]
+          p = "CMakeLists.txt"
+          s = open(p, encoding="utf-8").read()
+          edits = [
+              ('set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")', 'set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /utf-8")'),
+              ("libwinsparkle/x64/Release", "libwinsparkle/ARM64/Release"),
+              ("download/v0.7.0/WinSparkle-0.7.0.zip", f"download/v{ws}/WinSparkle-{ws}.zip"),
+              ("winsparkle ${LIBCAESIUM_SOURCE_DIR}/target/x86_64-pc-windows-gnu/${LIBCAESIUM_BUILD_TYPE}/caesium.dll)",
+               "winsparkle ${LIBCAESIUM_SOURCE_DIR}/target/x86_64-pc-windows-gnu/${LIBCAESIUM_BUILD_TYPE}/caesium.dll.lib)"),
+              ("x86_64-pc-windows-gnu", "aarch64-pc-windows-msvc"),
+          ]
+          for old, new in edits:
+              if old not in s:
+                  sys.exit(f"Patch target not found: {old}")
+              s = s.replace(old, new)
+          open(p, "w", encoding="utf-8").write(s)
+          print("CMakeLists.txt patched")
+
+      - name: Configure
+        shell: pwsh
+        run: cmake -S caesium -B build -G "Visual Studio 17 2022" -A ARM64 -DCMAKE_BUILD_TYPE=Release -DPORTABLE=ON "-DCMAKE_PREFIX_PATH=$env:QT_DIR"
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build build --config Release --target caesium_image_compressor --parallel
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem build -Recurse -Filter "Caesium Image Compressor.exe" | Select-Object -First 1
+          if (-not $exe) { throw "Built exe not found" }
+          $dist = "dist\Caesium-ARM64"
+          New-Item -ItemType Directory -Force $dist | Out-Null
+          Copy-Item $exe.FullName $dist
+          Copy-Item "build\libcaesium-prefix\src\libcaesium\target\aarch64-pc-windows-msvc\release\caesium.dll" $dist
+          Copy-Item "build\libwinsparkle-prefix\src\libwinsparkle\ARM64\Release\WinSparkle.dll" $dist
+          & "$env:QT_DIR\bin\windeployqt.exe" --release --no-translations --no-system-d3d-compiler --no-opengl-sw "$dist\Caesium Image Compressor.exe"
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          Get-ChildItem "$vs\VC\Redist\MSVC\*\arm64\Microsoft.VC14*.CRT\*.dll" | Copy-Item -Destination $dist
+          Copy-Item caesium\LICENSE $dist
+          Get-ChildItem $dist
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: Caesium-${{ env.CAESIUM_REF }}-windows-arm64
+          path: dist
