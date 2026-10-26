@@ -102,6 +102,8 @@ jobs:
               ("winsparkle ${LIBCAESIUM_SOURCE_DIR}/target/x86_64-pc-windows-gnu/${LIBCAESIUM_BUILD_TYPE}/caesium.dll)",
                "winsparkle ${LIBCAESIUM_SOURCE_DIR}/target/x86_64-pc-windows-gnu/${LIBCAESIUM_BUILD_TYPE}/caesium.dll.lib)"),
               ("x86_64-pc-windows-gnu", "aarch64-pc-windows-msvc"),
+              ('set_target_properties(${TARGET} PROPERTIES OUTPUT_NAME "Caesium Image Compressor")',
+               'set_target_properties(${TARGET} PROPERTIES OUTPUT_NAME "Caesium Image Compressor")\nif (MSVC)\n    target_link_options(${TARGET} PRIVATE /MANIFEST:NO)\nendif ()'),
           ]
           for old, new in edits:
               if old not in s:
