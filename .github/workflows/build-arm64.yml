@@ -72,6 +72,21 @@ jobs:
             echo "::warning::clang not found; building with MSVC only, so JPEG SIMD will be off"
           }
 
+      - name: Patch JPEG library for Windows clang
+        shell: pwsh
+        run: |
+          $dir = "C:\patches"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Invoke-WebRequest https://static.crates.io/crates/mozjpeg-sys/mozjpeg-sys-2.2.1.crate -OutFile "$dir\mozjpeg-sys.crate"
+          tar -xzf "$dir\mozjpeg-sys.crate" -C $dir
+          $f = "$dir\mozjpeg-sys-2.2.1\src\build.rs"
+          $s = Get-Content $f -Raw
+          if (-not $s.Contains('c.pic(true);')) { throw "pic line not found" }
+          $s.Replace('c.pic(true);', '// c.pic(true);') | Set-Content $f -NoNewline
+          $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { "$env:USERPROFILE\.cargo" }
+          "`n[patch.crates-io]`nmozjpeg-sys = { path = `"C:/patches/mozjpeg-sys-2.2.1`" }`n" | Add-Content "$cargoHome\config.toml"
+          Get-Content "$cargoHome\config.toml"
+
       - name: Patch build files for ARM64 MSVC
         shell: python
         working-directory: caesium
