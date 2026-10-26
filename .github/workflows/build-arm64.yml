@@ -97,7 +97,10 @@ jobs:
 
       - name: Configure
         shell: pwsh
-        run: cmake -S caesium -B build -G "Visual Studio 17 2022" -A ARM64 -DCMAKE_BUILD_TYPE=Release -DPORTABLE=ON "-DCMAKE_PREFIX_PATH=$env:QT_DIR"
+        run: |
+          & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -all -products * -format text -property displayName
+          cmake --version
+          cmake -S caesium -B build -A ARM64 -DCMAKE_BUILD_TYPE=Release -DPORTABLE=ON "-DCMAKE_PREFIX_PATH=$env:QT_DIR"
 
       - name: Build
         shell: pwsh
